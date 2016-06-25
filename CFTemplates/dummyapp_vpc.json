@@ -1,7 +1,15 @@
 {
   "AWSTemplateFormatVersion": "2010-09-09",
-  "Description": "Dummy App",
+  "Description": "Dummy App with VPC",
   "Parameters": {
+    "Environment": {
+      "Description": "Environment type (dev/prod)",
+      "Type": "String",
+      "MinLength": "3",
+      "MaxLength": "255",
+      "AllowedPattern": "[\\x20-\\x7E]*",
+      "ConstraintDescription": "can contain only ASCII characters."
+    },
     "VPCCoreIps": {
       "Description": "Number of IPs you want in the subnet",
       "Type": "Number",
@@ -22,16 +30,6 @@
       "Default": "172.16.",
       "AllowedPattern": "(\\d{1,3})\\.(\\d{1,3})\\.",
       "ConstraintDescription": "Must be the first 2 Network Bytes of the network subnet"
-    },
-    "PrivateResources": {
-      "Description": "Yes/No create private resources (subnets, NatGW etc.)",
-      "Type": "String",
-      "Default": "true",
-      "ConstraintDescription": "Has to be true or false",
-      "AllowedValues": [
-        "true",
-        "false"
-      ]
     },
     "SSHLocation": {
       "Description": "The IP address range that can be used to SSH to the EC2 instances",
@@ -88,16 +86,7 @@
       "ConstraintDescription": "must be a valid IP CIDR range of the form x.x.x.x"
     }
   },
-  "Conditions": {
-    "CreatePrivateResources": {
-      "Fn::Equals": [
-        {
-          "Ref": "PrivateResources"
-        },
-        "true"
-      ]
-    }
-  },
+  "Conditions": {},
   "Mappings": {
     "HorribleHackForSubnets": {
       "256": {
@@ -131,6 +120,75 @@
     }
   },
   "Resources": {
+    "sgPublicELB": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Enable SSH access and HTTP access on the inbound port",
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": "80",
+            "ToPort": "80",
+            "CidrIp": {
+              "Ref": "SSHLocation"
+            }
+          }
+        ],
+        "VpcId": {
+          "Ref": "vpcDummyApp"
+        }
+      }
+    },
+    "elbPublic": {
+      "DependsOn": "vpcIGWAttachment",
+      "Type": "AWS::ElasticLoadBalancing::LoadBalancer",
+      "Properties": {
+        "CrossZone": true,
+        "HealthCheck": {
+          "Target": "HTTP:80/",
+          "HealthyThreshold": "5",
+          "UnhealthyThreshold": "3",
+          "Interval": "10",
+          "Timeout": "5"
+        },
+        "LoadBalancerName": "PublicELB",
+        "Listeners": [
+          {
+            "LoadBalancerPort": "80",
+            "InstancePort": "80",
+            "Protocol": "TCP",
+            "InstanceProtocol": "TCP"
+          }
+        ],
+        "Policies": [],
+        "Scheme": "internet-facing",
+        "SecurityGroups": [
+          {
+            "Ref": "sgPublicELB"
+          }
+        ],
+        "Subnets": [
+          {
+            "Ref": "vpcPublicSubnetZoneA"
+          },
+          {
+            "Ref": "vpcPublicSubnetZoneB"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "PublicELB"
+          },
+          {
+            "Key": "Env",
+            "Value": {
+              "Ref": "Environment"
+            }
+          }
+        ]
+      }
+    },
     "sgSSHBastion": {
       "Type": "AWS::EC2::SecurityGroup",
       "Properties": {
@@ -257,7 +315,19 @@
               ]
             ]
           }
-        }
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "SSHBastion"
+          },
+          {
+            "Key": "Env",
+            "Value": {
+              "Ref": "Environment"
+            }
+          }
+        ]
       },
       "Type": "AWS::EC2::Instance"
     },
@@ -408,6 +478,11 @@
             ]
           }
         ],
+        "LoadBalancerNames": [
+          {
+            "Ref": "elbPublic"
+          }
+        ],
         "VPCZoneIdentifier": [
           {
             "Ref": "vpcPrivateSubnetZoneA"
@@ -415,7 +490,8 @@
           {
             "Ref": "vpcPrivateSubnetZoneB"
           }
-        ]
+        ],
+        "Tags": []
       }
     },
     "WHasgDummyApp": {
@@ -560,13 +636,35 @@
         "EnableDnsSupport": true,
         "EnableDnsHostnames": false,
         "InstanceTenancy": "default",
-        "Tags": []
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "DummyAppVPC"
+          },
+          {
+            "Key": "Env",
+            "Value": {
+              "Ref": "Environment"
+            }
+          }
+        ]
       }
     },
     "vpcInternetGateway": {
       "Type": "AWS::EC2::InternetGateway",
       "Properties": {
-        "Tags": []
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "DummyAppIGW"
+          },
+          {
+            "Key": "Env",
+            "Value": {
+              "Ref": "Environment"
+            }
+          }
+        ]
       },
       "DependsOn": "vpcDummyApp"
     },
@@ -617,7 +715,18 @@
           ]
         },
         "MapPublicIpOnLaunch": true,
-        "Tags": [],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "DummyAppPrivateSubnetA"
+          },
+          {
+            "Key": "Env",
+            "Value": {
+              "Ref": "Environment"
+            }
+          }
+        ],
         "VpcId": {
           "Ref": "vpcDummyApp"
         }
@@ -658,7 +767,18 @@
           ]
         },
         "MapPublicIpOnLaunch": false,
-        "Tags": [],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "DummyAppPublicSubnetB"
+          },
+          {
+            "Key": "Env",
+            "Value": {
+              "Ref": "Environment"
+            }
+          }
+        ],
         "VpcId": {
           "Ref": "vpcDummyApp"
         }
@@ -699,7 +819,18 @@
           ]
         },
         "MapPublicIpOnLaunch": false,
-        "Tags": [],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "DummyAppPrivateSubnetA"
+          },
+          {
+            "Key": "Env",
+            "Value": {
+              "Ref": "Environment"
+            }
+          }
+        ],
         "VpcId": {
           "Ref": "vpcDummyApp"
         }
@@ -716,7 +847,7 @@
               {
                 "Ref": "AWS::Region"
               },
-              "a"
+              "b"
             ]
           ]
         },
@@ -740,7 +871,18 @@
           ]
         },
         "MapPublicIpOnLaunch": false,
-        "Tags": [],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "DummyAppPrivateSubnetB"
+          },
+          {
+            "Key": "Env",
+            "Value": {
+              "Ref": "Environment"
+            }
+          }
+        ],
         "VpcId": {
           "Ref": "vpcDummyApp"
         }
@@ -789,7 +931,6 @@
     },
     "vpcDefaultRoutePrivateSubnetA": {
       "DependsOn": "vpcTablePrivateSubnetA",
-      "Condition": "CreatePrivateResources",
       "Type": "AWS::EC2::Route",
       "Properties": {
         "DestinationCidrBlock": "0.0.0.0/0",
@@ -802,7 +943,6 @@
       }
     },
     "vpcDefaultRoutePrivateSubnetB": {
-      "Condition": "CreatePrivateResources",
       "DependsOn": "vpcTablePrivateSubnetB",
       "Type": "AWS::EC2::Route",
       "Properties": {
@@ -864,7 +1004,6 @@
       }
     },
     "vpcEIPNatA": {
-      "Condition": "CreatePrivateResources",
       "Type": "AWS::EC2::EIP",
       "Properties": {
         "Domain": {
@@ -874,7 +1013,6 @@
       "DependsOn": "vpcDummyApp"
     },
     "vpcEIPNatB": {
-      "Condition": "CreatePrivateResources",
       "Type": "AWS::EC2::EIP",
       "Properties": {
         "Domain": {
@@ -886,7 +1024,6 @@
     "vpcNatGWA": {
       "Type": "AWS::EC2::NatGateway",
       "DependsOn": "vpcEIPNatA",
-      "Condition": "CreatePrivateResources",
       "Properties": {
         "AllocationId": {
           "Fn::GetAtt": [
@@ -902,7 +1039,6 @@
     "vpcNatGWB": {
       "Type": "AWS::EC2::NatGateway",
       "DependsOn": "vpcEIPNatB",
-      "Condition": "CreatePrivateResources",
       "Properties": {
         "AllocationId": {
           "Fn::GetAtt": [
