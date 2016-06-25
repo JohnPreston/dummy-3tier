@@ -1,0 +1,920 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Dummy App",
+  "Parameters": {
+    "VPCCoreIps": {
+      "Description": "Number of IPs you want in the subnet",
+      "Type": "Number",
+      "Default": 256,
+      "ConstraintDescription": "Has to be a power of 2",
+      "AllowedValues": [
+        256,
+        512,
+        1024,
+        2048
+      ]
+    },
+    "VPCCoreNetAddress": {
+      "Description": "The IP address range that can be used to SSH to the EC2 instances",
+      "Type": "String",
+      "MinLength": "4",
+      "MaxLength": "18",
+      "Default": "172.16.",
+      "AllowedPattern": "(\\d{1,3})\\.(\\d{1,3})\\.",
+      "ConstraintDescription": "Must be the first 2 Network Bytes of the network subnet"
+    },
+    "PrivateResources": {
+      "Description": "Yes/No create private resources (subnets, NatGW etc.)",
+      "Type": "String",
+      "Default": "true",
+      "ConstraintDescription": "Has to be true or false",
+      "AllowedValues": [
+        "true",
+        "false"
+      ]
+    },
+    "SSHLocation": {
+      "Description": "The IP address range that can be used to SSH to the EC2 instances",
+      "Type": "String",
+      "MinLength": "9",
+      "MaxLength": "18",
+      "Default": "0.0.0.0/0",
+      "AllowedPattern": "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})",
+      "ConstraintDescription": "must be a valid IP CIDR range of the form x.x.x.x/x."
+    },
+    "SSHServerPort": {
+      "Description": "TCP/IP port for Admin SSH",
+      "Type": "Number",
+      "Default": 2223,
+      "ConstraintDescription": "must be a valid port Number"
+    },
+    "KeyName": {
+      "Description": "Name of an existing EC2 KeyPair to enable SSH access to the instances",
+      "Type": "String",
+      "MinLength": "1",
+      "MaxLength": "255",
+      "AllowedPattern": "[\\x20-\\x7E]*",
+      "ConstraintDescription": "can contain only ASCII characters."
+    },
+    "InstanceType": {
+      "Description": "EC2 instance type",
+      "Type": "String",
+      "Default": "t2.small",
+      "AllowedValues": [
+        "t2.nano",
+        "t2.micro",
+        "t2.small",
+        "t2.medium",
+        "t2.large"
+      ],
+      "ConstraintDescription": "must be a valid EC2 instance type."
+    },
+    "ImageId": {
+      "Description": "Name of the image to be used",
+      "Type": "String",
+      "MinLength": "1",
+      "MaxLength": "255",
+      "AllowedPattern": "ami-[\\x20-\\x7E]*",
+      "ConstraintDescription": "can contain only ASCII characters.",
+      "Default": "ami-8e63fbfd"
+    },
+    "NTPServer": {
+      "Description": "The IP address to sync NTP on the first run",
+      "Type": "String",
+      "MinLength": "7",
+      "MaxLength": "15",
+      "Default": "92.63.212.161",
+      "AllowedPattern": "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})",
+      "ConstraintDescription": "must be a valid IP CIDR range of the form x.x.x.x"
+    }
+  },
+  "Conditions": {
+    "CreatePrivateResources": {
+      "Fn::Equals": [
+        {
+          "Ref": "PrivateResources"
+        },
+        "true"
+      ]
+    }
+  },
+  "Mappings": {
+    "HorribleHackForSubnets": {
+      "256": {
+        "CIDRPublicA": "0.0/27",
+        "CIDRPublicB": "0.32/27",
+        "CIDRPrivateA": "0.64/27",
+        "CIDRPrivateB": "0.128/27",
+        "CIDRVpcMask": "0.0/24"
+      },
+      "512": {
+        "CIDRPublicA": "0.0/26",
+        "CIDRPublicB": "0.64/26",
+        "CIDRPrivateA": "1.0/25",
+        "CIDRPrivateB": "1.128/25",
+        "CIDRVpcMask": "0.0/23"
+      },
+      "1024": {
+        "CIDRPublicA": "0.0/25",
+        "CIDRPublicB": "0.128/25",
+        "CIDRPrivateA": "1.0/24",
+        "CIDRPrivateB": "2.0/24",
+        "CIDRVpcMask": "0.0/22"
+      },
+      "2048": {
+        "CIDRPublicA": "0.0/25",
+        "CIDRPublicB": "0.128/25",
+        "CIDRPrivateA": "1.0/23",
+        "CIDRPrivateB": "3.0/23",
+        "CIDRVpcMask": "0.0/21"
+      }
+    }
+  },
+  "Resources": {
+    "sgSSHBastion": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Enable SSH access and HTTP access on the inbound port",
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": {
+              "Ref": "SSHServerPort"
+            },
+            "ToPort": {
+              "Ref": "SSHServerPort"
+            },
+            "CidrIp": {
+              "Ref": "SSHLocation"
+            }
+          }
+        ],
+        "VpcId": {
+          "Ref": "vpcDummyApp"
+        }
+      }
+    },
+    "ec2SSHBastion": {
+      "DependsOn": "vpcIGWAttachment",
+      "Metadata": {
+        "AWS::CloudFormation::Init": {
+          "config": {
+            "files": {},
+            "commands": {
+              "0000-repos": {
+                "command": "yum install http://dl.fedoraproject.org/pub/epel/epel-release-latest-6.noarch.rpm -y || echo Already there"
+              },
+              "0001-haproxy": {
+                "command": "haproxy -v || yum install haproxy -y"
+              },
+              "0002-ansible": {
+                "command": " ansible --version || yum install ansible -y"
+              },
+              "0003-git": {
+                "command": "git --version || yum install git -y"
+              },
+              "0004-dependencies": {
+                "command": "yum install python-netaddr -y"
+              },
+              "0005-EnableAnsibleLog": {
+                "command": "ansible localhost -m lineinfile -a 'dest=/etc/ansible/ansible.cfg regexp=log_path line=\"log_path = /var/log/ansible.log\"'"
+              },
+              "0005-UpgradeAnsible": {
+                "command": "ansible localhost -m yum -a 'name=ansible state=latest'"
+              }
+            }
+          }
+        }
+      },
+      "Properties": {
+        "KeyName": {
+          "Ref": "KeyName"
+        },
+        "ImageId": {
+          "Ref": "ImageId"
+        },
+        "SubnetId": {
+          "Ref": "vpcPublicSubnetZoneA"
+        },
+        "IamInstanceProfile": {
+          "Ref": "iamProfileDummyApp"
+        },
+        "SecurityGroupIds": [
+          {
+            "Fn::GetAtt": [
+              "sgSSHBastion",
+              "GroupId"
+            ]
+          }
+        ],
+        "InstanceType": {
+          "Ref": "InstanceType"
+        },
+        "UserData": {
+          "Fn::Base64": {
+            "Fn::Join": [
+              "",
+              [
+                "#!/bin/bash\n",
+                "ntpdate -u ",
+                {
+                  "Ref": "NTPServer"
+                },
+                "\n",
+                "# Helper function\n",
+                "function error_exit\n",
+                "{\n",
+                "/usr/bin/cfn-signal -e 1 -r \"$1\" '",
+                {
+                  "Ref": "WHec2SSHBastion"
+                },
+                "'\n",
+                "  exit 1\n",
+                "}\n",
+                "# Run cfn init\n",
+                "/usr/bin/cfn-init --stack ",
+                {
+                  "Ref": "AWS::StackName"
+                },
+                " -r ec2SSHBastion ",
+                " --region ",
+                {
+                  "Ref": "AWS::Region"
+                },
+                " --role=",
+                {
+                  "Ref": "iamRoleDummyApp"
+                },
+                " || error_exit 'Failed to run /usr/bin/cfn-init'\n",
+                "# Start up the /usr/bin/cfn-hup daemon to listen for changes\n",
+                "/usr/bin/cfn-hup || error_exit 'Failed to start /usr/bin/cfn-hup'\n",
+                "# All done so signal success\n",
+                "/usr/bin/cfn-signal -e 0 -r \"Server setup complete\" '",
+                {
+                  "Ref": "WHec2SSHBastion"
+                },
+                "'\n"
+              ]
+            ]
+          }
+        }
+      },
+      "Type": "AWS::EC2::Instance"
+    },
+    "WCec2SSHBastion": {
+      "Type": "AWS::CloudFormation::WaitCondition",
+      "Properties": {
+        "Handle": {
+          "Ref": "WHec2SSHBastion"
+        },
+        "Timeout": "2000"
+      }
+    },
+    "WHec2SSHBastion": {
+      "Type": "AWS::CloudFormation::WaitConditionHandle"
+    },
+    "lcDummyApp": {
+      "DependsOn": "vpcRouteAssociationPrivateSubnetA",
+      "Metadata": {
+        "AWS::CloudFormation::Init": {
+          "config": {
+            "files": {
+              "/etc/yum.repos.d/nginx.repo": {
+                "content": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "[nginx]\n",
+                      "name=nginx repo\n",
+                      "baseurl=http://nginx.org/packages/centos/$releasever/$basearch/\n",
+                      "gpgcheck=0\n",
+                      "enabled=1\n",
+                      "\n"
+                    ]
+                  ]
+                },
+                "mode": "000600",
+                "owner": "root",
+                "group": "root"
+              }
+            },
+            "commands": {
+              "0000-repos": {
+                "command": "yum install http://dl.fedoraproject.org/pub/epel/epel-release-latest-6.noarch.rpm -y || echo Already there"
+              },
+              "0001-haproxy": {
+                "command": "nginx -v || yum install nginx -y"
+              },
+              "0002-ansible": {
+                "command": " ansible --version || yum install ansible -y"
+              },
+              "0003-git": {
+                "command": "git --version || yum install git -y"
+              },
+              "0004-EnableAnsibleLog": {
+                "command": "ansible localhost -m lineinfile -a 'dest=/etc/ansible/ansible.cfg regexp=log_path line=\"log_path = /var/log/ansible.log\"'"
+              },
+              "0005-UpgradeAnsible": {
+                "command": "ansible localhost -m yum -a 'name=ansible state=latest'"
+              }
+            }
+          }
+        }
+      },
+      "Properties": {
+        "KeyName": {
+          "Ref": "KeyName"
+        },
+        "ImageId": {
+          "Ref": "ImageId"
+        },
+        "IamInstanceProfile": {
+          "Ref": "iamProfileDummyApp"
+        },
+        "SecurityGroups": [
+          {
+            "Ref": "sgDummyApp"
+          }
+        ],
+        "InstanceType": {
+          "Ref": "InstanceType"
+        },
+        "UserData": {
+          "Fn::Base64": {
+            "Fn::Join": [
+              "",
+              [
+                "#!/bin/bash\n",
+                "ntpdate -u ",
+                {
+                  "Ref": "NTPServer"
+                },
+                "\n",
+                "# Helper function\n",
+                "function error_exit\n",
+                "{\n",
+                "  /usr/bin/cfn-signal -e 1 -r \"$1\" '",
+                {
+                  "Ref": "WHasgDummyApp"
+                },
+                "'\n",
+                "  exit 1\n",
+                "}\n",
+                "# Run cfn init\n",
+                "/usr/bin/cfn-init --stack ",
+                {
+                  "Ref": "AWS::StackName"
+                },
+                " -r lcDummyApp ",
+                " --region ",
+                {
+                  "Ref": "AWS::Region"
+                },
+                " --role=",
+                {
+                  "Ref": "iamRoleDummyApp"
+                },
+                " || error_exit 'Failed to run /usr/bin/cfn-init'\n",
+                "# Start up the /usr/bin/cfn-hup daemon to listen for changes\n",
+                "/usr/bin/cfn-hup || error_exit 'Failed to start /usr/bin/cfn-hup'\n",
+                "# All done so signal success\n",
+                "/usr/bin/cfn-signal -e 0 -r \"Server setup complete\" '",
+                {
+                  "Ref": "WHasgDummyApp"
+                },
+                "'\n"
+              ]
+            ]
+          }
+        }
+      },
+      "Type": "AWS::AutoScaling::LaunchConfiguration"
+    },
+    "asgDummyApp": {
+      "DependsOn": "lcDummyApp",
+      "Type": "AWS::AutoScaling::AutoScalingGroup",
+      "Properties": {
+        "LaunchConfigurationName": {
+          "Ref": "lcDummyApp"
+        },
+        "MinSize": "2",
+        "MaxSize": "4",
+        "MetricsCollection": [
+          {
+            "Granularity": "1Minute",
+            "Metrics": [
+              "GroupMinSize",
+              "GroupMaxSize"
+            ]
+          }
+        ],
+        "VPCZoneIdentifier": [
+          {
+            "Ref": "vpcPrivateSubnetZoneA"
+          },
+          {
+            "Ref": "vpcPrivateSubnetZoneB"
+          }
+        ]
+      }
+    },
+    "WHasgDummyApp": {
+      "Type": "AWS::CloudFormation::WaitConditionHandle"
+    },
+    "WCasgDummyApp": {
+      "Type": "AWS::CloudFormation::WaitCondition",
+      "Properties": {
+        "Handle": {
+          "Ref": "WHasgDummyApp"
+        },
+        "Timeout": "2000"
+      }
+    },
+    "sgDummyApp": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Enable SSH access and HTTP access on the inbound port",
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": {
+              "Ref": "SSHServerPort"
+            },
+            "ToPort": {
+              "Ref": "SSHServerPort"
+            },
+            "CidrIp": {
+              "Ref": "SSHLocation"
+            }
+          }
+        ],
+        "VpcId": {
+          "Ref": "vpcDummyApp"
+        }
+      }
+    },
+    "sgDummyAppICMP": {
+      "Type": "AWS::EC2::SecurityGroupIngress",
+      "Properties": {
+        "GroupId": {
+          "Fn::GetAtt": [
+            "sgDummyApp",
+            "GroupId"
+          ]
+        },
+        "IpProtocol": "icmp",
+        "FromPort": "-1",
+        "ToPort": "-1",
+        "SourceSecurityGroupId": {
+          "Fn::GetAtt": [
+            "sgDummyApp",
+            "GroupId"
+          ]
+        }
+      },
+      "DependsOn": "sgDummyApp"
+    },
+    "iamRoleDummyApp": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "ec2.amazonaws.com"
+                ]
+              },
+              "Action": [
+                "sts:AssumeRole"
+              ]
+            }
+          ]
+        },
+        "Path": "/",
+        "Policies": [
+          {
+            "PolicyName": "STSandCF",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Action": "sts:AssumeRole",
+                  "Resource": "*",
+                  "Effect": "Allow"
+                },
+                {
+                  "Action": [
+                    "cloudformation:CreateUploadBucket",
+                    "cloudformation:DescribeStackEvents",
+                    "cloudformation:DescribeStackResource",
+                    "cloudformation:DescribeStackResources",
+                    "cloudformation:GetTemplateSummary",
+                    "cloudformation:ListStackResources",
+                    "cloudformation:SignalResource"
+                  ],
+                  "Resource": "*",
+                  "Effect": "Allow"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "iamProfileDummyApp": {
+      "Type": "AWS::IAM::InstanceProfile",
+      "Properties": {
+        "Path": "/",
+        "Roles": [
+          {
+            "Ref": "iamRoleDummyApp"
+          }
+        ]
+      }
+    },
+    "vpcDummyApp": {
+      "Type": "AWS::EC2::VPC",
+      "Properties": {
+        "CidrBlock": {
+          "Fn::Join": [
+            "",
+            [
+              {
+                "Ref": "VPCCoreNetAddress"
+              },
+              {
+                "Fn::FindInMap": [
+                  "HorribleHackForSubnets",
+                  {
+                    "Ref": "VPCCoreIps"
+                  },
+                  "CIDRVpcMask"
+                ]
+              }
+            ]
+          ]
+        },
+        "EnableDnsSupport": true,
+        "EnableDnsHostnames": false,
+        "InstanceTenancy": "default",
+        "Tags": []
+      }
+    },
+    "vpcInternetGateway": {
+      "Type": "AWS::EC2::InternetGateway",
+      "Properties": {
+        "Tags": []
+      },
+      "DependsOn": "vpcDummyApp"
+    },
+    "vpcIGWAttachment": {
+      "Type": "AWS::EC2::VPCGatewayAttachment",
+      "Properties": {
+        "InternetGatewayId": {
+          "Ref": "vpcInternetGateway"
+        },
+        "VpcId": {
+          "Ref": "vpcDummyApp"
+        }
+      },
+      "DependsOn": "vpcInternetGateway"
+    },
+    "vpcPublicSubnetZoneA": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "AvailabilityZone": {
+          "Fn::Join": [
+            "",
+            [
+              "",
+              {
+                "Ref": "AWS::Region"
+              },
+              "a"
+            ]
+          ]
+        },
+        "CidrBlock": {
+          "Fn::Join": [
+            "",
+            [
+              {
+                "Ref": "VPCCoreNetAddress"
+              },
+              {
+                "Fn::FindInMap": [
+                  "HorribleHackForSubnets",
+                  {
+                    "Ref": "VPCCoreIps"
+                  },
+                  "CIDRPublicA"
+                ]
+              }
+            ]
+          ]
+        },
+        "MapPublicIpOnLaunch": true,
+        "Tags": [],
+        "VpcId": {
+          "Ref": "vpcDummyApp"
+        }
+      }
+    },
+    "vpcPublicSubnetZoneB": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "CidrBlock": {
+          "Fn::Join": [
+            "",
+            [
+              {
+                "Ref": "VPCCoreNetAddress"
+              },
+              {
+                "Fn::FindInMap": [
+                  "HorribleHackForSubnets",
+                  {
+                    "Ref": "VPCCoreIps"
+                  },
+                  "CIDRPublicB"
+                ]
+              }
+            ]
+          ]
+        },
+        "AvailabilityZone": {
+          "Fn::Join": [
+            "",
+            [
+              "",
+              {
+                "Ref": "AWS::Region"
+              },
+              "b"
+            ]
+          ]
+        },
+        "MapPublicIpOnLaunch": false,
+        "Tags": [],
+        "VpcId": {
+          "Ref": "vpcDummyApp"
+        }
+      }
+    },
+    "vpcPrivateSubnetZoneA": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "AvailabilityZone": {
+          "Fn::Join": [
+            "",
+            [
+              "",
+              {
+                "Ref": "AWS::Region"
+              },
+              "a"
+            ]
+          ]
+        },
+        "CidrBlock": {
+          "Fn::Join": [
+            "",
+            [
+              {
+                "Ref": "VPCCoreNetAddress"
+              },
+              {
+                "Fn::FindInMap": [
+                  "HorribleHackForSubnets",
+                  {
+                    "Ref": "VPCCoreIps"
+                  },
+                  "CIDRPrivateA"
+                ]
+              }
+            ]
+          ]
+        },
+        "MapPublicIpOnLaunch": false,
+        "Tags": [],
+        "VpcId": {
+          "Ref": "vpcDummyApp"
+        }
+      }
+    },
+    "vpcPrivateSubnetZoneB": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "AvailabilityZone": {
+          "Fn::Join": [
+            "",
+            [
+              "",
+              {
+                "Ref": "AWS::Region"
+              },
+              "a"
+            ]
+          ]
+        },
+        "CidrBlock": {
+          "Fn::Join": [
+            "",
+            [
+              {
+                "Ref": "VPCCoreNetAddress"
+              },
+              {
+                "Fn::FindInMap": [
+                  "HorribleHackForSubnets",
+                  {
+                    "Ref": "VPCCoreIps"
+                  },
+                  "CIDRPrivateB"
+                ]
+              }
+            ]
+          ]
+        },
+        "MapPublicIpOnLaunch": false,
+        "Tags": [],
+        "VpcId": {
+          "Ref": "vpcDummyApp"
+        }
+      }
+    },
+    "vpcTablePublicSubnets": {
+      "DependsOn": "vpcIGWAttachment",
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "VpcId": {
+          "Ref": "vpcDummyApp"
+        },
+        "Tags": []
+      }
+    },
+    "vpcTablePrivateSubnetA": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "VpcId": {
+          "Ref": "vpcDummyApp"
+        },
+        "Tags": []
+      }
+    },
+    "vpcTablePrivateSubnetB": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "VpcId": {
+          "Ref": "vpcDummyApp"
+        },
+        "Tags": []
+      }
+    },
+    "vpcDefaultRoutePublicSubnets": {
+      "DependsOn": "vpcTablePublicSubnets",
+      "Type": "AWS::EC2::Route",
+      "Properties": {
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "GatewayId": {
+          "Ref": "vpcInternetGateway"
+        },
+        "RouteTableId": {
+          "Ref": "vpcTablePublicSubnets"
+        }
+      }
+    },
+    "vpcDefaultRoutePrivateSubnetA": {
+      "DependsOn": "vpcTablePrivateSubnetA",
+      "Condition": "CreatePrivateResources",
+      "Type": "AWS::EC2::Route",
+      "Properties": {
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "NatGatewayId": {
+          "Ref": "vpcNatGWA"
+        },
+        "RouteTableId": {
+          "Ref": "vpcTablePrivateSubnetA"
+        }
+      }
+    },
+    "vpcDefaultRoutePrivateSubnetB": {
+      "Condition": "CreatePrivateResources",
+      "DependsOn": "vpcTablePrivateSubnetB",
+      "Type": "AWS::EC2::Route",
+      "Properties": {
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "NatGatewayId": {
+          "Ref": "vpcNatGWB"
+        },
+        "RouteTableId": {
+          "Ref": "vpcTablePrivateSubnetB"
+        }
+      }
+    },
+    "vpcRouteAssociationPublicSubnetA": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "DependsOn": "vpcDefaultRoutePublicSubnets",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "vpcTablePublicSubnets"
+        },
+        "SubnetId": {
+          "Ref": "vpcPublicSubnetZoneA"
+        }
+      }
+    },
+    "vpcRouteAssociationPublicSubnetB": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "DependsOn": "vpcDefaultRoutePublicSubnets",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "vpcTablePublicSubnets"
+        },
+        "SubnetId": {
+          "Ref": "vpcPublicSubnetZoneB"
+        }
+      }
+    },
+    "vpcRouteAssociationPrivateSubnetA": {
+      "DependsOn": "vpcDefaultRoutePrivateSubnetA",
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "vpcTablePrivateSubnetA"
+        },
+        "SubnetId": {
+          "Ref": "vpcPrivateSubnetZoneA"
+        }
+      }
+    },
+    "vpcRouteAssociationPrivateSubnetB": {
+      "DependsOn": "vpcDefaultRoutePrivateSubnetB",
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "vpcTablePrivateSubnetB"
+        },
+        "SubnetId": {
+          "Ref": "vpcPrivateSubnetZoneB"
+        }
+      }
+    },
+    "vpcEIPNatA": {
+      "Condition": "CreatePrivateResources",
+      "Type": "AWS::EC2::EIP",
+      "Properties": {
+        "Domain": {
+          "Ref": "vpcDummyApp"
+        }
+      },
+      "DependsOn": "vpcDummyApp"
+    },
+    "vpcEIPNatB": {
+      "Condition": "CreatePrivateResources",
+      "Type": "AWS::EC2::EIP",
+      "Properties": {
+        "Domain": {
+          "Ref": "vpcDummyApp"
+        }
+      },
+      "DependsOn": "vpcDummyApp"
+    },
+    "vpcNatGWA": {
+      "Type": "AWS::EC2::NatGateway",
+      "DependsOn": "vpcEIPNatA",
+      "Condition": "CreatePrivateResources",
+      "Properties": {
+        "AllocationId": {
+          "Fn::GetAtt": [
+            "vpcEIPNatA",
+            "AllocationId"
+          ]
+        },
+        "SubnetId": {
+          "Ref": "vpcPublicSubnetZoneA"
+        }
+      }
+    },
+    "vpcNatGWB": {
+      "Type": "AWS::EC2::NatGateway",
+      "DependsOn": "vpcEIPNatB",
+      "Condition": "CreatePrivateResources",
+      "Properties": {
+        "AllocationId": {
+          "Fn::GetAtt": [
+            "vpcEIPNatB",
+            "AllocationId"
+          ]
+        },
+        "SubnetId": {
+          "Ref": "vpcPublicSubnetZoneB"
+        }
+      }
+    }
+  },
+  "Outputs": {}
+}
